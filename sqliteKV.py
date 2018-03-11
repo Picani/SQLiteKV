@@ -17,7 +17,7 @@ class KV:
 
     ..Warning::
       * The `close` method has to be called after use.
-      * The `delete` method is not yet implementated.
+      * The `delete` method is not yet implemented.
     """
     def __init__(self, dbfile):
         """
@@ -33,23 +33,23 @@ class KV:
 
         if 'vals' not in tables:
             self.conn.execute("""CREATE TABLE vals(
-                              ID INTEGER NOT NULL,
-                              value TEXT,
-                              PRIMARY KEY(ID))""")
+                              ID INTEGER PRIMARY KEY ASC,
+                              value TEXT UNIQUE NOT NULL)""")
 
-            if 'keys' not in tables:
+        if 'keys' not in tables:
                 self.conn.execute("""CREATE TABLE keys(
-                                  key TEXT, valueID INTEGER,
+                                  key TEXT UNIQUE NOT NULL,
+                                  valueID INTEGER NOT NULL,
                                   FOREIGN KEY(valueID) REFERENCES vals(ID))""")
-                self.conn.execute("CREATE UNIQUE INDEX keys_index ON keys(key)")
+                self.conn.execute("CREATE UNIQUE INDEX idx_keys ON keys(key)")
 
 
     def close(self):
         """
         Properly close the database.
         """
-        if self.conn is not None:
-            self.conn.close()
+        self.conn.commit()
+        self.conn.close()
 
 
     def __getitem__(self, key):
@@ -112,8 +112,53 @@ class KV:
         self[key] = value
 
 
+    def putmany(self, mapping):
+        """
+        Insert the given mapping. Uses the `sqlite3.executemany` method,
+        which makes it faster than multiple `put`.
+        """
+        # What values do we already have in the store?
+        values = set(mapping.values())
+        q = "SELECT * FROM vals WHERE value IN ({})".format(
+            ','.join(['?']*len(values)))
+        value_ids = {}
+        for row in self.conn.execute(q, list(values)).fetchall():
+            value_ids[row['value']] = row['ID']
+
+        # We add the others...
+        entries = []
+        for v in mapping.values():
+            if v in value_ids:
+                continue
+            entries.append((v,))
+        self.conn.executemany("INSERT INTO vals(value) VALUES (?)", entries)
+        self.conn.commit()
+
+        # ...and get back their row IDs
+        values = set(v for v in mapping.values() if v not in value_ids)
+        q = "SELECT * FROM vals WHERE value IN ({})".format(
+            ','.join(['?']*len(values)))
+        for row in self.conn.execute(q, list(values)).fetchall():
+            value_ids[row['value']] = row['ID']
+
+        # What keys for we already have in the store?
+        keys = list(set(mapping.keys()))
+        q = "SELECT key FROM keys WHERE key IN ({})".format(
+            ','.join(['?']*len(keys)))
+        already_there = set(row['key'] for row in self.conn.execute(q, keys))
+
+        # Let's add the others!
+        entries = []
+        for k, v in mapping.items():
+            if k in already_there:
+                continue
+            entries.append((k, value_ids[v]))
+        self.conn.executemany("INSERT INTO keys(key, valueID) VALUES (?, ?)", entries)
+        self.conn.commit()
+
+
     def delete(self, key):
         """
-        Delete the key.
+        Delete the key. Not implemented yet.
         """
         raise NotImplementedError
